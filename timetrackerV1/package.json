@@ -1,7 +1,7 @@
 {
   "name": "vscode-timetracker",
   "displayName": "TimeTracker00",
-  "description": "",
+  "description": "A simple time tracker for VSCode",
   "version": "0.0.1",
   "engines": {
     "vscode": "^1.90.0"
@@ -9,18 +9,8 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
   "main": "./out/extension.js",
-  "contributes": {
-    "commands": [
-      {
-        "command": "timetrackerV1.helloWorld",
-        "title": "Hello World"
-      }
-    ]
-  },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
@@ -37,5 +27,18 @@
     "typescript": "^5.4.5",
     "@vscode/test-cli": "^0.0.9",
     "@vscode/test-electron": "^2.4.0"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "timetracking01.startTrackingTime",
+        "title": "Start Time Tracking"
+      },
+      {
+        "command": "timetracking01.stopTrackingTime",
+        "title": "Stop Time Tracking"
+      }
+    ]
   }
 }
+
