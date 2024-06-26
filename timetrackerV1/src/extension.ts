@@ -4,22 +4,26 @@ import * as path from 'path';
 
 let isOpen = false;
 let editTime: string | null = null;
-let totalDuration = "00:00:00"; // Format for displaying total duration
+let totalDuration = "00:00:00";
+let previousCharCount = 0;
+let keystrokeCount = 0;
 
-let updateInterval: NodeJS.Timeout | undefined; // Interval ID for updating totalDuration
-let heartbeatInterval: NodeJS.Timeout | undefined; // Interval ID for sending heartbeat
+let updateInterval: NodeJS.Timeout | undefined;
+let heartbeatInterval: NodeJS.Timeout | undefined;
+let keystrokeInterval: NodeJS.Timeout | undefined;
 
 /**
  * Start tracking time manually.
  */
-function startTrackingTime() {
+function startTrackingTime(context: vscode.ExtensionContext) {
     if (!isOpen) {
         isOpen = true;
         editTime = new Date().toISOString();
-        updateData(); // Update initial data when starting manually
+        updateData(context);
         vscode.window.showInformationMessage('Manual time tracking started.');
-        updateInterval = setInterval(updateTotalDuration, 10000); // Start update interval
-        heartbeatInterval = setInterval(sendHeartbeat, 10000); // Start heartbeat interval
+        updateInterval = setInterval(() => updateTotalDuration(context), 10000);
+        heartbeatInterval = setInterval(() => sendHeartbeat(context), 10000);
+        keystrokeInterval = setInterval(() => trackKeystrokes(context), 10000);
     } else {
         vscode.window.showInformationMessage('Time tracking is already active.');
     }
@@ -28,14 +32,15 @@ function startTrackingTime() {
 /**
  * Stop tracking time manually and save data.
  */
-function stopTrackingTime() {
+function stopTrackingTime(context: vscode.ExtensionContext) {
     if (isOpen) {
         isOpen = false;
         const endTime = new Date().toISOString();
-        calculateDuration(editTime!, endTime); // Calculate duration until now
-        updateData(); // Update data when manually stopped
-        clearInterval(updateInterval!); // Stop the update interval
-        clearInterval(heartbeatInterval!); // Stop the heartbeat interval
+        calculateDuration(editTime!, endTime);
+        updateData(context);
+        clearInterval(updateInterval!);
+        clearInterval(heartbeatInterval!);
+        clearInterval(keystrokeInterval!);
         vscode.window.showInformationMessage('Manual time tracking stopped.');
     } else {
         vscode.window.showInformationMessage('Time tracking is not active.');
@@ -46,36 +51,29 @@ function stopTrackingTime() {
  * Send a heartbeat.
  * This function is called every 10 seconds.
  */
-async function sendHeartbeat() {
+async function sendHeartbeat(context: vscode.ExtensionContext) {
     const editor = vscode.window.activeTextEditor;
-    let isTaskRunning = false;
-    let isCompiling = false;
-    let isDebugging = false;
-
-    // Check if there is an active task
-    const tasks = await vscode.tasks.fetchTasks();
-    if (tasks.some(task => task.isBackground || task.execution !== undefined)) {
-        isTaskRunning = true;
-    }
-
-    // Check if there is a task related to compilation
-    if (tasks.some(task => task.name.toLowerCase().includes('compile') || task.name.toLowerCase().includes('build'))) {
-        isCompiling = true;
-    }
-
-    // Check if there is an active debugging session
-    const debugSessions = vscode.debug.activeDebugSession;
-    if (debugSessions) {
-        isDebugging = true;
-    }
-
     if (editor) {
         const timestamp = new Date().toISOString();
-        const filePath = editor.document.uri.fsPath; // Get the file path of the current document
-        const cursorPosition = editor.selection.active; // Get the current cursor position
+        const filePath = editor.document.uri.fsPath;
+        const cursorPosition = editor.selection.active;
 
-        if (filePath === getDataPath()) {
-            return; // Ignore changes made to the tracking JSON file itself
+        let isTaskRunning = false;
+        let isCompiling = false;
+        let isDebugging = false;
+
+        const tasks = await vscode.tasks.fetchTasks();
+        if (tasks.some(task => task.isBackground || task.execution !== undefined)) {
+            isTaskRunning = true;
+        }
+
+        if (tasks.some(task => task.name.toLowerCase().includes('compile') || task.name.toLowerCase().includes('build'))) {
+            isCompiling = true;
+        }
+
+        const debugSessions = vscode.debug.activeDebugSession;
+        if (debugSessions) {
+            isDebugging = true;
         }
 
         const heartbeat: Heartbeat = {
@@ -87,10 +85,11 @@ async function sendHeartbeat() {
             },
             isTaskRunning,
             isCompiling,
-            isDebugging
+            isDebugging,
+            keystrokeCount
         };
 
-        updateDataWithHeartbeat(heartbeat);
+        updateDataWithHeartbeat(context, heartbeat);
     }
 }
 
@@ -98,47 +97,69 @@ async function sendHeartbeat() {
  * Update totalDuration in memory.
  * This function is called every 10 seconds.
  */
-function updateTotalDuration() {
+function updateTotalDuration(context: vscode.ExtensionContext) {
     if (isOpen) {
         const currentTime = new Date().toISOString();
         calculateDuration(editTime!, currentTime);
-        updateData(); // Update data with latest totalDuration
+        updateData(context);
+    }
+}
+
+/**
+ * Track keystrokes and update keystrokeCount.
+ */
+function trackKeystrokes(context: vscode.ExtensionContext) {
+    const editor = vscode.window.activeTextEditor;
+    if (editor) {
+        const currentCharCount = editor.document.getText().length;
+        const charsTyped = currentCharCount - previousCharCount;
+        previousCharCount = currentCharCount;
+        keystrokeCount += charsTyped;
+
+        vscode.window.showInformationMessage(`Characters typed in the last interval: ${charsTyped}`);
+        updateData(context);
     }
 }
 
 /**
  * Update data in JSON file.
  */
-function updateData() {
+function updateData(context: vscode.ExtensionContext) {
     const data: TrackingData = {
         isOpen,
         editTime: editTime!,
         totalDuration,
-        heartbeats: readHeartbeats()
+        keystrokeCount,
+        heartbeats: readHeartbeats(context)
     };
 
-    writeDataFile(getDataPath(), data);
+    const dataPath = getDataPath(context);
+    writeDataFile(dataPath, data);
 }
 
 /**
  * Update data with a new heartbeat.
- * @param {Heartbeat} heartbeat
+ * @param heartbeat The heartbeat object to update.
  */
-function updateDataWithHeartbeat(heartbeat: Heartbeat) {
+function updateDataWithHeartbeat(context: vscode.ExtensionContext, heartbeat: Heartbeat) {
+    console.log('Updating data with new heartbeat:', heartbeat);
+
     const data: TrackingData = {
         isOpen,
         editTime: editTime!,
         totalDuration,
-        heartbeats: [...readHeartbeats(), heartbeat]
+        keystrokeCount,
+        heartbeats: [...readHeartbeats(context), heartbeat]
     };
 
-    writeDataFile(getDataPath(), data);
+    const dataPath = getDataPath(context);
+    writeDataFile(dataPath, data);
 }
 
 /**
  * Calculate duration in hours, minutes, seconds format.
- * @param {string} startTime 
- * @param {string} endTime 
+ * @param startTime The start time in ISO string format.
+ * @param endTime The end time in ISO string format.
  */
 function calculateDuration(startTime: string, endTime: string) {
     const start = new Date(startTime);
@@ -154,39 +175,83 @@ function calculateDuration(startTime: string, endTime: string) {
 
 /**
  * Get the path to the data file.
- * @returns {string} The path to the data file.
  */
-function getDataPath(): string {
-    const extensionPath = vscode.workspace.rootPath || vscode.env.appRoot!;
+function getDataPath(context: vscode.ExtensionContext) {
+    const extensionPath = context.extensionPath;
     return path.join(extensionPath, 'vscode-timetracking-data.json');
 }
 
 /**
  * Read heartbeats from the JSON file.
- * @returns {Heartbeat[]} The array of heartbeats.
  */
-function readHeartbeats(): Heartbeat[] {
-    const dataPath = getDataPath();
-    if (fs.existsSync(dataPath)) {
-        const data = fs.readFileSync(dataPath, 'utf8');
-        const parsedData: TrackingData = JSON.parse(data);
-        return parsedData.heartbeats || [];
+function readHeartbeats(context: vscode.ExtensionContext) {
+    const dataPath = getDataPath(context);
+    try {
+        if (fs.existsSync(dataPath)) {
+            const data = fs.readFileSync(dataPath, 'utf8');
+            const parsedData: TrackingData = JSON.parse(data);
+            return parsedData.heartbeats || [];
+        }
+    } catch (error) {
+        console.error('Error reading heartbeats:', error);
     }
     return [];
 }
 
 /**
  * Write data to the JSON file.
- * @param {string} dataPath The path to the data file.
- * @param {TrackingData} data The data to write to the file.
+ * @param dataPath The path to the data file.
+ * @param data The data to write to the file.
  */
 function writeDataFile(dataPath: string, data: TrackingData) {
-    fs.writeFileSync(dataPath, JSON.stringify(data, null, 4), 'utf8');
+    try {
+        fs.writeFileSync(dataPath, JSON.stringify(data, null, 4), 'utf8');
+        console.log(`Data written to file: ${dataPath}`);
+    } catch (error) {
+        console.error(`Failed to write data to file ${dataPath}:`, error);
+    }
 }
 
 /**
- * Interface for heartbeats stored in JSON.
+ * Extension activation.
  */
+function activate(context: vscode.ExtensionContext) {
+    console.log('Congratulations, your extension "timetracking01" is now active!');
+
+    let disposableStartTracking = vscode.commands.registerCommand('timetracking01.startTrackingTime', () => startTrackingTime(context));
+    let disposableStopTracking = vscode.commands.registerCommand('timetracking01.stopTrackingTime', () => stopTrackingTime(context));
+
+    updateInterval = setInterval(() => updateTotalDuration(context), 10000);
+    heartbeatInterval = setInterval(() => sendHeartbeat(context), 10000);
+    keystrokeInterval = setInterval(() => trackKeystrokes(context), 10000);
+
+    context.subscriptions.push(disposableStartTracking);
+    context.subscriptions.push(disposableStopTracking);
+
+    // Check and create initial data file if it doesn't exist
+    const dataPath = getDataPath(context);
+    if (!fs.existsSync(dataPath)) {
+        const initialData: TrackingData = {
+            isOpen: false,
+            editTime: "",
+            totalDuration: "00:00:00",
+            keystrokeCount: 0,
+            heartbeats: []
+        };
+        writeDataFile(dataPath, initialData);
+    }
+}
+
+/**
+ * Extension deactivation.
+ */
+function deactivate(context: vscode.ExtensionContext) {
+    clearInterval(updateInterval!);
+    clearInterval(heartbeatInterval!);
+    clearInterval(keystrokeInterval!);
+    updateData(context); 
+}
+
 interface Heartbeat {
     timestamp: string;
     filePath: string;
@@ -194,43 +259,15 @@ interface Heartbeat {
     isTaskRunning: boolean;
     isCompiling: boolean;
     isDebugging: boolean;
+    keystrokeCount: number;
 }
 
-/**
- * Interface for the tracking data stored in JSON.
- */
 interface TrackingData {
     isOpen: boolean;
     editTime: string;
     totalDuration: string;
+    keystrokeCount: number;
     heartbeats: Heartbeat[];
 }
 
-/**
- * @param {vscode.ExtensionContext} context
- */
-function activate(context: vscode.ExtensionContext) {
-    console.log('Congratulations, your extension "timetracking01" is now active!');
-
-    // Register commands for manual start and stop
-    let disposableStartTracking = vscode.commands.registerCommand('timetracking01.startTrackingTime', startTrackingTime);
-    let disposableStopTracking = vscode.commands.registerCommand('timetracking01.stopTrackingTime', stopTrackingTime);
-
-    // Set intervals to update totalDuration and heartbeat every 10 & 60 seconds
-    updateInterval = setInterval(updateTotalDuration, 10000); // 10 seconds interval
-    heartbeatInterval = setInterval(sendHeartbeat, 60000); // 60 seconds interval
-
-    context.subscriptions.push(disposableStartTracking, disposableStopTracking);
-}
-
-// This method is called when your extension is deactivated
-function deactivate() {
-    clearInterval(updateInterval!); // Clear the update interval
-    clearInterval(heartbeatInterval!); // Clear the heartbeat interval
-    updateData(); // Save data when the extension is deactivated
-}
-
-export {
-    activate,
-    deactivate
-};
+export { activate, deactivate };
